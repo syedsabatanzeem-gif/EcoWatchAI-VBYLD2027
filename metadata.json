@@ -1,0 +1,6 @@
+{
+  "name": "EcoWatch AI — Cleaner Water • Healthier Tomorrow",
+  "description": "Intelligent water-quality monitoring, data visualization, and statistical anomaly detection platform for watersheds and environmental health.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
