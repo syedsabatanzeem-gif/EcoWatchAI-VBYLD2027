@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Logo } from './Logo.tsx';
+import heroRiverImage from '../assets/images/hero_water_landscape_1791733620596.jpg';
 import {
   Activity,
   ShieldCheck,
@@ -19,6 +20,7 @@ import {
   Trees,
   Droplets,
   HeartHandshake,
+  Waves,
 } from 'lucide-react';
 
 interface LandingPageProps {
@@ -32,6 +34,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onOpenUpload,
   onOpenCommunityReport,
 }) => {
+  const [candidateIndex, setCandidateIndex] = useState<number>(0);
+  const imageCandidates = [
+    heroRiverImage,
+    '/images/hero_water_landscape.jpg',
+    '/images/hero_water_landscape_1791733620596.jpg',
+  ];
+
+  const currentSrc = candidateIndex < imageCandidates.length ? imageCandidates[candidateIndex] : null;
+
+  const handleImageError = () => {
+    setCandidateIndex((prev) => prev + 1);
+  };
+
   return (
     <div className="space-y-16 sm:space-y-24 pb-16">
       {/* Hero Section */}
@@ -114,14 +129,29 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             {/* Right Column: Hero Visual Asset */}
             <div className="lg:col-span-5 relative">
               <div className="relative rounded-2xl overflow-hidden border border-slate-200 shadow-xl bg-slate-100 aspect-16/10 sm:aspect-4/3 group">
-                <img
-                  src="/src/assets/images/hero_water_landscape_1791733620596.jpg"
-                  alt="Pristine mountain river catchment ecosystem monitored by EcoWatch AI"
-                  className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-                  referrerPolicy="no-referrer"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/20 to-transparent" />
-                <div className="absolute bottom-4 left-4 right-4 text-white">
+                {currentSrc ? (
+                  <img
+                    src={currentSrc}
+                    alt="Pristine mountain river catchment ecosystem monitored by EcoWatch AI"
+                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+                    referrerPolicy="no-referrer"
+                    onError={handleImageError}
+                  />
+                ) : (
+                  <div className="w-full h-full bg-gradient-to-br from-slate-900 via-sky-950 to-teal-950 flex flex-col items-center justify-center p-6 text-center select-none">
+                    <div className="p-3.5 rounded-2xl bg-teal-500/10 border border-teal-500/20 text-teal-300 mb-2.5 backdrop-blur-xs">
+                      <Waves className="w-8 h-8 text-teal-400" />
+                    </div>
+                    <div className="text-sm font-bold text-white tracking-wide">
+                      EcoWatch River Monitoring Network
+                    </div>
+                    <div className="text-xs text-teal-200/80 mt-1 max-w-xs">
+                      Continuous hydrological telemetry across Indian river systems
+                    </div>
+                  </div>
+                )}
+                <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/20 to-transparent pointer-events-none" />
+                <div className="absolute bottom-4 left-4 right-4 text-white pointer-events-none">
                   <div className="flex items-center gap-2 text-xs font-semibold text-teal-300 mb-1">
                     <span className="w-2 h-2 rounded-full bg-teal-400"></span>
                     <span>Continuous Catchment Awareness</span>

@@ -204,12 +204,19 @@ export const AlertsReview: React.FC<AlertsReviewProps> = ({
                   {/* Parameter metrics bar */}
                   <div className="pt-2 flex flex-wrap gap-4 text-xs font-mono text-slate-600">
                     <span>pH: {alert.reading.ph.toFixed(2)}</span>
-                    <span>Turb: {alert.reading.turbidity.toFixed(2)} NTU</span>
+                    {alert.reading.dissolved_oxygen !== undefined && (
+                      <span className={alert.reading.dissolved_oxygen < 5.0 ? 'text-amber-800 font-bold' : ''}>
+                        DO: {alert.reading.dissolved_oxygen.toFixed(2)} mg/L
+                      </span>
+                    )}
+                    {alert.reading.bod_mg_l !== undefined && (
+                      <span className={alert.reading.bod_mg_l > 3.0 ? 'text-rose-800 font-bold' : ''}>
+                        BOD: {alert.reading.bod_mg_l.toFixed(2)} mg/L
+                      </span>
+                    )}
+                    <span>Turb: {alert.reading.turbidity != null ? `${alert.reading.turbidity.toFixed(1)} NTU` : '—'}</span>
                     <span>TDS: {Math.round(alert.reading.tds)} mg/L</span>
                     <span>Temp: {alert.reading.temperature.toFixed(1)}°C</span>
-                    {alert.reading.dissolved_oxygen !== undefined && (
-                      <span>DO: {alert.reading.dissolved_oxygen.toFixed(2)} mg/L</span>
-                    )}
                   </div>
 
                   {alert.review_notes && (

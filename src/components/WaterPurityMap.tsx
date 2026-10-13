@@ -4,29 +4,27 @@ import {
   TileLayer,
   Marker,
   Popup,
+  Polyline,
+  Tooltip,
   useMap,
   useMapEvents,
 } from 'react-leaflet';
 import L from 'leaflet';
 import { Reading, ThresholdConfig } from '../types.ts';
+import { INDIAN_RIVERS, IndianRiverPath } from '../data/indianRiverPaths.ts';
 import {
   Compass,
   Search,
   MapPin,
   AlertTriangle,
   CheckCircle2,
-  Globe,
   Sliders,
   Eye,
   Activity,
-  UploadCloud,
-  MessageSquarePlus,
   RotateCcw,
   ZoomIn,
   ZoomOut,
-  Info,
   Calendar,
-  Database,
   Layers,
   X,
   ExternalLink,
@@ -34,32 +32,26 @@ import {
   ChevronRight,
   ShieldCheck,
   ShieldAlert,
-  Loader2,
+  Waves,
+  Droplets,
+  Filter,
 } from 'lucide-react';
-
-interface GeocodeResult {
-  place_id: number | string;
-  display_name: string;
-  lat: string;
-  lon: string;
-  type?: string;
-  category?: string;
-  boundingbox?: [string, string, string, string];
-  address?: Record<string, string>;
-}
 
 interface StationMarkerData {
   id: string;
-  stationCode?: string;
+  stationCode: string;
   name: string;
+  river: string;
+  state: string;
   district?: string;
-  waterBody?: string;
+  basin?: string;
   latitude: number;
   longitude: number;
   latestReading: Reading;
   allReadings: Reading[];
   isFlagged: boolean;
   status: Reading['status'];
+  cpcbClass: string;
   flagReasons: string[];
   source: string;
   sampleDate: string;
@@ -74,28 +66,20 @@ interface WaterPurityMapProps {
   onOpenCommunityReport?: () => void;
 }
 
-// Calculate Great Circle Distance in km
-function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371; // Earth radius in km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c);
-}
-
 interface MapAction {
   id: number;
-  type: 'world' | 'flyTo' | 'fitBounds';
+  type: 'india' | 'flyTo' | 'fitBounds';
   center?: [number, number];
   zoom?: number;
   bounds?: [[number, number], [number, number]];
 }
+
+// India Geographic Bounding Envelope
+const INDIA_BOUNDS: [[number, number], [number, number]] = [
+  [8.0, 68.0],
+  [35.5, 96.5],
+];
+const INDIA_CENTER: [number, number] = [22.5, 79.5];
 
 // Map Controller for safe, non-looping programmatic movements and viewport monitoring
 function MapViewController({
@@ -120,12 +104,12 @@ function MapViewController({
     if (!action || action.id === lastActionIdRef.current) return;
     lastActionIdRef.current = action.id;
 
-    if (action.type === 'world') {
-      map.flyTo([20, 0], 2, { duration: 1.2 });
+    if (action.type === 'india') {
+      map.flyToBounds(INDIA_BOUNDS, { padding: [20, 20], duration: 1.2 });
     } else if (action.type === 'fitBounds' && action.bounds) {
       map.flyToBounds(action.bounds, {
-        padding: [50, 50],
-        maxZoom: 14,
+        padding: [40, 40],
+        maxZoom: 12,
         duration: 1.2,
       });
     } else if (action.type === 'flyTo' && action.center && action.zoom !== undefined) {
@@ -153,74 +137,76 @@ function MapViewController({
   return null;
 }
 
-// Create custom distinct marker icons
-function createStationIcon(isFlagged: boolean, isSelected: boolean) {
+// Zoom control overlay button component
+function MapZoomButtons({ onZoomIn, onZoomOut }: { onZoomIn: () => void; onZoomOut: () => void }) {
+  return (
+    <div className="absolute top-4 left-4 z-[400] flex flex-col gap-1.5 shadow-md">
+      <button
+        onClick={onZoomIn}
+        className="w-8 h-8 flex items-center justify-center bg-white hover:bg-slate-50 text-slate-700 hover:text-sky-800 rounded-lg border border-slate-200 transition-colors shadow-xs cursor-pointer active:scale-95"
+        title="Zoom In"
+        aria-label="Zoom In"
+      >
+        <ZoomIn className="w-4 h-4" />
+      </button>
+      <button
+        onClick={onZoomOut}
+        className="w-8 h-8 flex items-center justify-center bg-white hover:bg-slate-50 text-slate-700 hover:text-sky-800 rounded-lg border border-slate-200 transition-colors shadow-xs cursor-pointer active:scale-95"
+        title="Zoom Out"
+        aria-label="Zoom Out"
+      >
+        <ZoomOut className="w-4 h-4" />
+      </button>
+    </div>
+  );
+}
+
+// Create custom distinct marker icons with neutral environmental status colors
+function createStationIcon(isFlagged: boolean, isSelected: boolean, cpcbClass: string) {
   if (isFlagged) {
-    // Flagged station: Bold warning amber/red with pulsing beacon ring
+    // Records requiring verification: Neutral warm amber/ochre badge
     return L.divIcon({
       className: 'custom-station-marker',
       html: `
         <div class="relative flex items-center justify-center -translate-x-1/2 -translate-y-full cursor-pointer group">
-          <!-- Pulsing Alert Beacon -->
-          <span class="absolute w-10 h-10 -top-1 rounded-full bg-rose-500/30 animate-ping"></span>
-          
-          <!-- Outer Halo -->
-          <div class="relative flex items-center justify-center w-8 h-8 rounded-full bg-rose-600 text-white shadow-lg border-2 border-white ring-2 ring-rose-400/50 transition-transform duration-200 group-hover:scale-125 ${
-            isSelected ? 'scale-125 ring-4 ring-rose-500' : ''
+          <span class="absolute w-7 h-7 -top-0.5 rounded-full bg-amber-500/20"></span>
+          <div class="relative flex items-center justify-center w-6 h-6 rounded-full bg-amber-600 text-white shadow-md border-2 border-white ring-2 ring-amber-400/40 transition-transform duration-200 group-hover:scale-125 ${
+            isSelected ? 'scale-125 ring-4 ring-amber-500 bg-amber-700' : ''
           }">
-            <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+            <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
               <path d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/>
             </svg>
           </div>
-          <!-- Pin pointer -->
-          <div class="w-2 h-2 bg-rose-600 rotate-45 -mt-1 border-r border-b border-white"></div>
+          <div class="w-1.5 h-1.5 bg-amber-600 rotate-45 -mt-0.5 border-r border-b border-white"></div>
         </div>
       `,
-      iconSize: [32, 40],
-      iconAnchor: [16, 40],
-      popupAnchor: [0, -42],
+      iconSize: [26, 34],
+      iconAnchor: [13, 34],
+      popupAnchor: [0, -36],
     });
   }
 
-  // Normal / Verified station: Emerald / River blue with calm clean water droplet
+  // Normal station: Neutral calming ocean blue / emerald depending on class
+  const isClassA = cpcbClass === 'Class A';
+  const bgColor = isClassA ? 'bg-emerald-600' : 'bg-sky-700';
+
   return L.divIcon({
     className: 'custom-station-marker',
     html: `
       <div class="relative flex items-center justify-center -translate-x-1/2 -translate-y-full cursor-pointer group">
-        <!-- Calm Halo -->
-        <div class="relative flex items-center justify-center w-7 h-7 rounded-full bg-sky-700 text-white shadow-md border-2 border-white ring-2 ring-sky-300/40 transition-transform duration-200 group-hover:scale-125 ${
-          isSelected ? 'scale-125 ring-4 ring-sky-500 bg-sky-800' : ''
+        <div class="relative flex items-center justify-center w-6 h-6 rounded-full ${bgColor} text-white shadow-md border-2 border-white ring-2 ring-sky-300/40 transition-transform duration-200 group-hover:scale-125 ${
+          isSelected ? 'scale-125 ring-4 ring-sky-500 bg-sky-900' : ''
         }">
-          <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+          <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
             <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
           </svg>
         </div>
-        <!-- Pin pointer -->
-        <div class="w-1.5 h-1.5 bg-sky-700 rotate-45 -mt-0.5 border-r border-b border-white"></div>
+        <div class="w-1.5 h-1.5 ${bgColor} rotate-45 -mt-0.5 border-r border-b border-white"></div>
       </div>
     `,
-    iconSize: [28, 36],
-    iconAnchor: [14, 36],
-    popupAnchor: [0, -38],
-  });
-}
-
-function createSearchLocationIcon() {
-  return L.divIcon({
-    className: 'custom-search-marker',
-    html: `
-      <div class="relative flex items-center justify-center -translate-x-1/2 -translate-y-full">
-        <div class="relative flex items-center justify-center w-8 h-8 rounded-full bg-indigo-600 text-white shadow-xl border-2 border-white ring-4 ring-indigo-300/50 animate-bounce">
-          <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
-            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 0 1 0-5 2.5 2.5 0 0 1 0 5z"/>
-          </svg>
-        </div>
-        <div class="w-2 h-2 bg-indigo-600 rotate-45 -mt-1 border-r border-b border-white"></div>
-      </div>
-    `,
-    iconSize: [32, 40],
-    iconAnchor: [16, 40],
-    popupAnchor: [0, -42],
+    iconSize: [24, 32],
+    iconAnchor: [12, 32],
+    popupAnchor: [0, -34],
   });
 }
 
@@ -229,8 +215,6 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
   thresholds,
   onSelectReading,
   onNavigateToTrends,
-  onOpenUpload,
-  onOpenCommunityReport,
 }) => {
   // Map Action Command State
   const [mapAction, setMapAction] = useState<MapAction | null>(null);
@@ -238,45 +222,50 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
   // Selected station
   const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
 
-  // Search & Geocoding State
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchResults, setSearchResults] = useState<GeocodeResult[]>([]);
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [geocodingError, setGeocodingError] = useState<string | null>(null);
-  const [selectedSearchPlace, setSelectedSearchPlace] = useState<GeocodeResult | null>(null);
+  // Selected river highlight
+  const [selectedRiverId, setSelectedRiverId] = useState<string | null>(null);
 
-  // Viewport tracking for empty-state detection (initial: all verified stations visible on world view)
-  const [visibleStationCount, setVisibleStationCount] = useState<number>(() => {
-    return readings.filter(
-      (r) =>
-        typeof r.latitude === 'number' &&
-        !isNaN(r.latitude) &&
-        typeof r.longitude === 'number' &&
-        !isNaN(r.longitude)
-    ).length;
-  });
+  // Filter States
+  const [selectedState, setSelectedState] = useState<string>('all');
+  const [selectedRiverFilter, setSelectedRiverFilter] = useState<string>('all');
+  const [selectedDistrict, setSelectedDistrict] = useState<string>('all');
+  const [selectedStationFilter, setSelectedStationFilter] = useState<string>('all');
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('all');
+  const [selectedDateRange, setSelectedDateRange] = useState<string>('all');
+  const [highlightParameter, setHighlightParameter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  // Catalog Pagination States
+  const [catalogPage, setCatalogPage] = useState<number>(1);
+  const catalogPageSize = 8;
+
+  // Viewport tracking for empty-state detection
+  const [visibleStationCount, setVisibleStationCount] = useState<number>(0);
   const [mapCenterCoords, setMapCenterCoords] = useState<{ lat: number; lng: number }>({
-    lat: 20,
-    lng: 0,
+    lat: INDIA_CENTER[0],
+    lng: INDIA_CENTER[1],
   });
 
   // Tile layer style selection
   const [tileStyle, setTileStyle] = useState<'osm' | 'terrain' | 'voyager'>('osm');
 
-  const searchContainerRef = useRef<HTMLDivElement>(null);
-  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // Map reference for zoom buttons
+  const mapRef = useRef<L.Map | null>(null);
 
-  // 1. Build verified station list strictly from actual dataset latitude & longitude
+  // 1. Build verified Indian station list strictly from actual dataset latitude & longitude within India
   const verifiedStations = useMemo<StationMarkerData[]>(() => {
     const stationMap: Record<string, Reading[]> = {};
     readings.forEach((r) => {
-      // Must have valid numeric coordinates from dataset
+      // Must have valid numeric coordinates strictly inside India
       if (
         typeof r.latitude === 'number' &&
         !isNaN(r.latitude) &&
         typeof r.longitude === 'number' &&
-        !isNaN(r.longitude)
+        !isNaN(r.longitude) &&
+        r.latitude >= 6.5 &&
+        r.latitude <= 37.5 &&
+        r.longitude >= 68.0 &&
+        r.longitude <= 97.5
       ) {
         if (!stationMap[r.location]) stationMap[r.location] = [];
         stationMap[r.location].push(r);
@@ -293,7 +282,9 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
         latest.status === 'High Priority' ||
         latest.status === 'Needs Review' ||
         latest.status === 'Needs Further Investigation' ||
-        Boolean(latest.anomaly_reasons && latest.anomaly_reasons.length > 0);
+        Boolean(latest.anomaly_reasons && latest.anomaly_reasons.length > 0) ||
+        latest.dissolved_oxygen < 5.0 ||
+        latest.bod_mg_l > 3.0;
 
       const reasons = latest.anomaly_reasons || [];
 
@@ -301,114 +292,133 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
         id: latest.station_id || latest.id,
         stationCode: latest.station_id || latest.id,
         name,
+        river: latest.river || latest.water_body || 'Ganga River',
+        state: latest.state || 'National Reach',
         district: latest.district,
-        waterBody: latest.water_body,
-        latitude: latest.latitude!,
-        longitude: latest.longitude!,
+        basin: latest.basin || latest.main_basin,
+        latitude: latest.latitude,
+        longitude: latest.longitude,
         latestReading: latest,
         allReadings: records,
         isFlagged,
         status: latest.status,
+        cpcbClass: latest.cpcb_class || 'Class B',
         flagReasons: reasons,
-        source: latest.source || 'CPCB - NWMP / APPCB',
+        source: latest.source || 'Central Pollution Control Board (CPCB) - NWMP / Ministry of Jal Shakti',
         sampleDate: latest.timestamp,
       };
     });
   }, [readings]);
+
+  // Extract unique Indian states, rivers, and districts available in data
+  const availableStates = useMemo(() => {
+    return Array.from(new Set(verifiedStations.map((s) => s.state).filter(Boolean))).sort();
+  }, [verifiedStations]);
+
+  const availableRivers = useMemo(() => {
+    return Array.from(new Set(verifiedStations.map((s) => s.river).filter(Boolean))).sort();
+  }, [verifiedStations]);
+
+  const availableDistricts = useMemo(() => {
+    return Array.from(
+      new Set(
+        verifiedStations
+          .filter((s) => selectedState === 'all' || s.state.toLowerCase() === selectedState.toLowerCase())
+          .map((s) => s.district)
+          .filter((d): d is string => Boolean(d))
+      )
+    ).sort();
+  }, [verifiedStations, selectedState]);
+
+  // Filtered stations based on active state, river, district, station, date range, parameter, and search query
+  const filteredStations = useMemo(() => {
+    return verifiedStations.filter((s) => {
+      if (selectedState !== 'all' && s.state.toLowerCase() !== selectedState.toLowerCase()) {
+        return false;
+      }
+      if (selectedRiverFilter !== 'all' && s.river.toLowerCase() !== selectedRiverFilter.toLowerCase()) {
+        return false;
+      }
+      if (selectedDistrict !== 'all' && (!s.district || s.district.toLowerCase() !== selectedDistrict.toLowerCase())) {
+        return false;
+      }
+      if (selectedStationFilter !== 'all' && s.id !== selectedStationFilter) {
+        return false;
+      }
+      if (selectedRiverId) {
+        const activeRiver = INDIAN_RIVERS.find((r) => r.id === selectedRiverId);
+        if (activeRiver && !s.river.toLowerCase().includes(activeRiver.name.toLowerCase().split(' ')[0])) {
+          return false;
+        }
+      }
+      if (selectedDateRange !== 'all') {
+        if (selectedDateRange === '2026' && !s.sampleDate.startsWith('2026')) return false;
+        if (selectedDateRange === '2025' && !s.sampleDate.startsWith('2025')) return false;
+      }
+      if (highlightParameter !== 'all') {
+        if (highlightParameter === 'do_below_5' && s.latestReading.dissolved_oxygen >= 5.0) return false;
+        if (highlightParameter === 'bod_above_3' && s.latestReading.bod_mg_l <= 3.0) return false;
+        if (highlightParameter === 'ph_abnormal' && (s.latestReading.ph >= 6.5 && s.latestReading.ph <= 8.5)) return false;
+        if (highlightParameter === 'has_cod' && (s.latestReading.cod_mg_l === undefined || s.latestReading.cod_mg_l === null)) return false;
+        if (highlightParameter === 'has_turbidity' && (s.latestReading.turbidity === undefined || s.latestReading.turbidity === null)) return false;
+        if (highlightParameter === 'has_nitrate' && (s.latestReading.nitrate_mg_l === undefined || s.latestReading.nitrate_mg_l === null)) return false;
+      }
+      if (selectedStatusFilter !== 'all') {
+        if (selectedStatusFilter === 'flagged' && !s.isFlagged) return false;
+        if (selectedStatusFilter === 'normal' && s.isFlagged) return false;
+        if (selectedStatusFilter.startsWith('class-') && s.cpcbClass.toLowerCase() !== selectedStatusFilter.replace('class-', 'class ')) {
+          return false;
+        }
+      }
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        const matchesName = s.name.toLowerCase().includes(q);
+        const matchesCode = s.stationCode.toLowerCase().includes(q);
+        const matchesRiver = s.river.toLowerCase().includes(q);
+        const matchesState = s.state.toLowerCase().includes(q);
+        const matchesDistrict = (s.district || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesCode && !matchesRiver && !matchesState && !matchesDistrict) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [
+    verifiedStations,
+    selectedState,
+    selectedRiverFilter,
+    selectedDistrict,
+    selectedStationFilter,
+    selectedRiverId,
+    selectedDateRange,
+    highlightParameter,
+    selectedStatusFilter,
+    searchQuery,
+  ]);
 
   // Selected station object
   const activeStation = useMemo(() => {
     return verifiedStations.find((s) => s.id === selectedStationId) || null;
   }, [verifiedStations, selectedStationId]);
 
-  // Nearest verified station to current map center or searched place
-  const nearestStationInfo = useMemo(() => {
-    if (verifiedStations.length === 0) return null;
-    const refLat = selectedSearchPlace
-      ? parseFloat(selectedSearchPlace.lat)
-      : mapCenterCoords.lat;
-    const refLon = selectedSearchPlace
-      ? parseFloat(selectedSearchPlace.lon)
-      : mapCenterCoords.lng;
+  // Selected river object from paths
+  const activeRiverPath = useMemo(() => {
+    return INDIAN_RIVERS.find((r) => r.id === selectedRiverId) || null;
+  }, [selectedRiverId]);
 
-    let minDistance = Infinity;
-    let closestStation: StationMarkerData = verifiedStations[0];
-
-    verifiedStations.forEach((st) => {
-      const d = calculateDistanceKm(refLat, refLon, st.latitude, st.longitude);
-      if (d < minDistance) {
-        minDistance = d;
-        closestStation = st;
-      }
-    });
-
-    return {
-      station: closestStation,
-      distanceKm: minDistance,
-    };
-  }, [verifiedStations, selectedSearchPlace, mapCenterCoords]);
-
-  // Catalog search, filters and pagination states
-  const [catalogSearch, setCatalogSearch] = useState('');
-  const [catalogDistrict, setCatalogDistrict] = useState('all');
-  const [catalogRiver, setCatalogRiver] = useState('all');
-  const [catalogStatus, setCatalogStatus] = useState('all');
-  const [catalogPage, setCatalogPage] = useState(1);
-  const catalogPageSize = 8;
-
-  // Extract unique districts and rivers from verified stations
-  const availableDistricts = useMemo(() => {
-    return Array.from(
-      new Set(verifiedStations.map((s) => s.district).filter((d): d is string => Boolean(d)))
-    ).sort();
-  }, [verifiedStations]);
-
-  const availableRivers = useMemo(() => {
-    return Array.from(
-      new Set(verifiedStations.map((s) => s.waterBody).filter((w): w is string => Boolean(w)))
-    ).sort();
-  }, [verifiedStations]);
-
-  // Filtered stations for catalog
-  const filteredCatalogStations = useMemo(() => {
-    return verifiedStations.filter((s) => {
-      if (catalogSearch) {
-        const q = catalogSearch.toLowerCase();
-        const matchesName = s.name.toLowerCase().includes(q);
-        const matchesCode = (s.stationCode || s.id).toLowerCase().includes(q);
-        const matchesDistrict = (s.district || '').toLowerCase().includes(q);
-        const matchesRiver = (s.waterBody || '').toLowerCase().includes(q);
-        if (!matchesName && !matchesCode && !matchesDistrict && !matchesRiver) return false;
-      }
-      if (catalogDistrict !== 'all' && s.district?.toLowerCase() !== catalogDistrict.toLowerCase()) {
-        return false;
-      }
-      if (catalogRiver !== 'all' && s.waterBody?.toLowerCase() !== catalogRiver.toLowerCase()) {
-        return false;
-      }
-      if (catalogStatus !== 'all') {
-        if (catalogStatus === 'flagged' && !s.isFlagged) return false;
-        if (catalogStatus === 'normal' && s.isFlagged) return false;
-      }
-      return true;
-    });
-  }, [verifiedStations, catalogSearch, catalogDistrict, catalogRiver, catalogStatus]);
-
-  const catalogTotalPages = Math.max(1, Math.ceil(filteredCatalogStations.length / catalogPageSize));
+  // Catalog pagination
+  const catalogTotalPages = Math.max(1, Math.ceil(filteredStations.length / catalogPageSize));
   const paginatedCatalogStations = useMemo(() => {
     const start = (catalogPage - 1) * catalogPageSize;
-    return filteredCatalogStations.slice(start, start + catalogPageSize);
-  }, [filteredCatalogStations, catalogPage, catalogPageSize]);
+    return filteredStations.slice(start, start + catalogPageSize);
+  }, [filteredStations, catalogPage, catalogPageSize]);
 
-  // Safe viewport change handler that updates state only when values truly change
+  // Safe viewport change handler
   const handleVisibleCountChange = useCallback(
     (count: number, centerLat: number, centerLng: number) => {
       setVisibleStationCount((prev) => (prev !== count ? count : prev));
       setMapCenterCoords((prev) => {
-        if (
-          Math.abs(prev.lat - centerLat) > 0.05 ||
-          Math.abs(prev.lng - centerLng) > 0.05
-        ) {
+        if (Math.abs(prev.lat - centerLat) > 0.05 || Math.abs(prev.lng - centerLng) > 0.05) {
           return { lat: centerLat, lng: centerLng };
         }
         return prev;
@@ -417,198 +427,84 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
     []
   );
 
-  // Perform geocoding via /api/geocode proxy (which rate-limits and uses compliant headers)
-  const performGeocode = async (query: string) => {
-    if (!query || query.trim().length < 2) {
-      setSearchResults([]);
-      setGeocodingError(null);
-      return;
-    }
-
-    setIsSearching(true);
-    setGeocodingError(null);
-
-    try {
-      const res = await fetch(`/api/geocode?q=${encodeURIComponent(query.trim())}`);
-      if (!res.ok) {
-        throw new Error(`Geocoding server error (${res.status})`);
-      }
-      const data = await res.json();
-      if (data.error) {
-        setGeocodingError(data.error);
-        setSearchResults([]);
-      } else if (Array.isArray(data.results)) {
-        setSearchResults(data.results);
-        setIsDropdownOpen(true);
-        if (data.results.length === 0) {
-          setGeocodingError('No geographical locations matched your search query.');
-        }
-      } else {
-        setSearchResults([]);
-      }
-    } catch (err: any) {
-      console.warn('Geocoding query error:', err);
-      // Fallback directly to client fetch if proxy fails
-      try {
-        const directRes = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
-            query.trim()
-          )}&addressdetails=1&limit=5`,
-          {
-            headers: {
-              'Accept-Language': 'en',
-            },
-          }
-        );
-        if (directRes.ok) {
-          const directData = await directRes.json();
-          setSearchResults(directData);
-          setIsDropdownOpen(true);
-          return;
-        }
-      } catch (fallbackErr) {
-        // Ignored
-      }
-      setGeocodingError('Unable to reach geocoding service. Please check your network.');
-      setSearchResults([]);
-    } finally {
-      setIsSearching(false);
+  // Zoom handlers
+  const handleZoomIn = () => {
+    if (mapRef.current) {
+      mapRef.current.zoomIn();
     }
   };
 
-  // Handle typing in search input (debounced by 850ms to respect rate limits)
-  const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setSearchQuery(val);
-    setGeocodingError(null);
-
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
+  const handleZoomOut = () => {
+    if (mapRef.current) {
+      mapRef.current.zoomOut();
     }
+  };
 
-    if (val.trim().length >= 2) {
-      debounceTimerRef.current = setTimeout(() => {
-        performGeocode(val);
-      }, 850);
+  // Reset to India
+  const handleResetToIndia = () => {
+    setSelectedState('all');
+    setSelectedRiverFilter('all');
+    setSelectedRiverId(null);
+    setSelectedDistrict('all');
+    setSelectedStationFilter('all');
+    setSelectedStatusFilter('all');
+    setSelectedDateRange('all');
+    setHighlightParameter('all');
+    setSearchQuery('');
+    setSelectedStationId(null);
+    setCatalogPage(1);
+    setMapAction({
+      id: Date.now(),
+      type: 'india',
+    });
+  };
+
+  // Zoom to specific river
+  const handleSelectRiver = (river: IndianRiverPath) => {
+    if (selectedRiverId === river.id) {
+      setSelectedRiverId(null);
+      setSelectedRiverFilter('all');
     } else {
-      setSearchResults([]);
-      setIsDropdownOpen(false);
+      setSelectedRiverId(river.id);
+      setSelectedRiverFilter(river.name);
+      // Fit bounds of this river
+      const lats = river.coordinates.map((c) => c[0]);
+      const lngs = river.coordinates.map((c) => c[1]);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
+
+      setMapAction({
+        id: Date.now(),
+        type: 'fitBounds',
+        bounds: [
+          [minLat - 0.2, minLng - 0.2],
+          [maxLat + 0.2, maxLng + 0.2],
+        ],
+      });
     }
   };
 
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    if (searchQuery.trim().length >= 2) {
-      performGeocode(searchQuery);
-    }
-  };
-
-  // User selects a location from the Nominatim geocoding results
-  const handleSelectGeocodePlace = (place: GeocodeResult) => {
-    setSelectedSearchPlace(place);
-    setIsDropdownOpen(false);
-    setSearchQuery(place.display_name);
-
-    const lat = parseFloat(place.lat);
-    const lon = parseFloat(place.lon);
-
-    if (isNaN(lat) || isNaN(lon)) return;
-
-    if (place.boundingbox && place.boundingbox.length === 4) {
-      const minLat = parseFloat(place.boundingbox[0]);
-      const maxLat = parseFloat(place.boundingbox[1]);
-      const minLon = parseFloat(place.boundingbox[2]);
-      const maxLon = parseFloat(place.boundingbox[3]);
-
-      if (!isNaN(minLat) && !isNaN(maxLat) && !isNaN(minLon) && !isNaN(maxLon)) {
-        setMapAction({
-          id: Date.now(),
-          type: 'fitBounds',
-          bounds: [
-            [minLat, minLon],
-            [maxLat, maxLon],
-          ],
-        });
-        return;
-      }
-    }
-
-    // Determine zoom by category / place type
-    let zoom = 12;
-    const type = (place.type || '').toLowerCase();
-    const category = (place.category || '').toLowerCase();
-
-    if (type === 'country' || category === 'country') zoom = 5;
-    else if (type === 'state' || type === 'province' || type === 'region') zoom = 7;
-    else if (type === 'county' || type === 'district') zoom = 9;
-    else if (type === 'city' || type === 'town') zoom = 11;
-    else if (type === 'village' || type === 'suburb') zoom = 13;
-    else if (type === 'road' || type === 'street' || type === 'building' || type === 'house') zoom = 16;
-
+  // Zoom to specific station
+  const handleLocateStation = (station: StationMarkerData) => {
+    setSelectedStationId(station.id);
     setMapAction({
       id: Date.now(),
       type: 'flyTo',
-      center: [lat, lon],
-      zoom,
+      center: [station.latitude, station.longitude],
+      zoom: 12,
     });
   };
-
-  // Reset to Whole World view
-  const handleResetWorldView = () => {
-    setSelectedSearchPlace(null);
-    setMapAction({
-      id: Date.now(),
-      type: 'world',
-    });
-  };
-
-  // Zoom directly to verified stations bounding box
-  const handleFocusVerifiedStations = () => {
-    if (verifiedStations.length === 0) return;
-    const lats = verifiedStations.map((s) => s.latitude);
-    const lons = verifiedStations.map((s) => s.longitude);
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons);
-    const maxLon = Math.max(...lons);
-
-    setSelectedSearchPlace(null);
-    setMapAction({
-      id: Date.now(),
-      type: 'fitBounds',
-      bounds: [
-        [minLat - 0.05, minLon - 0.05],
-        [maxLat + 0.05, maxLon + 0.05],
-      ],
-    });
-  };
-
-  // Click outside to close dropdown
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (
-        searchContainerRef.current &&
-        !searchContainerRef.current.contains(event.target as Node)
-      ) {
-        setIsDropdownOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   // Format date helper
   const formatDate = (isoString: string) => {
     try {
       const d = new Date(isoString);
-      return d.toLocaleDateString('en-US', {
+      return d.toLocaleDateString('en-IN', {
         month: 'short',
         day: 'numeric',
         year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        timeZoneName: 'short',
       });
     } catch {
       return isoString;
@@ -617,196 +513,284 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* 1. Header & World Controls */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-sky-100 text-sky-800">
-              <Globe className="w-5 h-5" />
+      {/* 1. Header & Controls */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-orange-100 text-orange-800 border border-orange-200">
+                National Geographic Scope: India Only
+              </span>
+              <span className="text-slate-300">·</span>
+              <span className="text-xs text-slate-500 font-mono">CPCB - NWMP Stations</span>
             </div>
-            <span>Global GIS Reach & Watershed Telemetry Map</span>
-          </h2>
-          <p className="text-xs text-slate-500 mt-1">
-            Global OpenStreetMap GIS integration • Telemetry marker screening • Verified sampling stations
-          </p>
-        </div>
-
-        {/* Quick Map Controls & Layers */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="flex items-center p-0.5 bg-slate-100 rounded-lg text-xs font-medium border border-slate-200">
-            <button
-              onClick={() => setTileStyle('osm')}
-              className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                tileStyle === 'osm'
-                  ? 'bg-white text-slate-900 font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              OSM Standard
-            </button>
-            <button
-              onClick={() => setTileStyle('voyager')}
-              className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                tileStyle === 'voyager'
-                  ? 'bg-white text-slate-900 font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Voyager Clear
-            </button>
-            <button
-              onClick={() => setTileStyle('terrain')}
-              className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                tileStyle === 'terrain'
-                  ? 'bg-white text-slate-900 font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Hydrology Topo
-            </button>
+            <h2 className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight mt-1 flex items-center gap-2">
+              <Waves className="w-5 h-5 text-sky-700" />
+              <span>Indian Rivers Water Quality Telemetry Map</span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Interactive GIS telemetry network monitoring the Ganga, Yamuna, Godavari, Krishna, Cauvery, Narmada, and major Indian river basins.
+            </p>
           </div>
 
-          <button
-            onClick={handleResetWorldView}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
-            title="Show the whole world"
-          >
-            <Globe className="w-3.5 h-3.5 text-sky-700" />
-            <span>Whole World</span>
-          </button>
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={handleResetToIndia}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
+              title="Reset view to whole of India"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+              <span>Reset to India</span>
+            </button>
 
-          <button
-            onClick={handleFocusVerifiedStations}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-sky-800 hover:bg-sky-900 rounded-lg shadow-2xs transition-colors cursor-pointer"
-            title="Zoom to verified telemetry stations"
-          >
-            <MapPin className="w-3.5 h-3.5" />
-            <span>Focus Verified Stations ({verifiedStations.length})</span>
-          </button>
-        </div>
-      </div>
-
-      {/* 2. Interactive Place Search Bar (Nominatim) */}
-      <div ref={searchContainerRef} className="relative z-30">
-        <form onSubmit={handleSearchSubmit} className="relative">
-          <div className="flex items-center bg-white rounded-xl border border-slate-300 shadow-sm overflow-hidden focus-within:ring-2 focus-within:ring-sky-500 focus-within:border-sky-500 transition-all">
-            <div className="pl-3.5 pr-2 text-slate-400">
-              {isSearching ? (
-                <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
-              ) : (
-                <Search className="w-4 h-4" />
-              )}
-            </div>
-
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={handleSearchInputChange}
-              onFocus={() => {
-                if (searchResults.length > 0) setIsDropdownOpen(true);
-              }}
-              placeholder="Search any country, state, city, district, village, or address (e.g. 'Kenya', 'Tokyo', 'Willamette River', 'Paris', 'Rio de Janeiro')..."
-              className="w-full py-2.5 px-1 text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
-            />
-
-            {searchQuery && (
+            {/* Tile Style Selector */}
+            <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50 text-xs">
               <button
-                type="button"
-                onClick={() => {
-                  setSearchQuery('');
-                  setSearchResults([]);
-                  setIsDropdownOpen(false);
-                  setSelectedSearchPlace(null);
-                }}
-                className="p-1.5 mr-1 text-slate-400 hover:text-slate-600 rounded-md"
+                onClick={() => setTileStyle('osm')}
+                className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer font-medium ${
+                  tileStyle === 'osm' ? 'bg-white shadow-2xs text-sky-900 font-bold' : 'text-slate-600 hover:text-slate-900'
+                }`}
               >
-                <X className="w-4 h-4" />
+                Standard
+              </button>
+              <button
+                onClick={() => setTileStyle('terrain')}
+                className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer font-medium ${
+                  tileStyle === 'terrain' ? 'bg-white shadow-2xs text-sky-900 font-bold' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Terrain
+              </button>
+              <button
+                onClick={() => setTileStyle('voyager')}
+                className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer font-medium ${
+                  tileStyle === 'voyager' ? 'bg-white shadow-2xs text-sky-900 font-bold' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Voyager
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Interactive River Fast-Selection Badges */}
+        <div className="pt-2 border-t border-slate-100 space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-700 flex items-center gap-1.5">
+              <Droplets className="w-3.5 h-3.5 text-sky-600" />
+              <span>Select River to Trace Course:</span>
+            </span>
+            {selectedRiverId && (
+              <button
+                onClick={() => setSelectedRiverId(null)}
+                className="text-xs text-sky-700 hover:text-sky-900 font-medium inline-flex items-center gap-1 cursor-pointer"
+              >
+                <X className="w-3 h-3" />
+                <span>Clear River Highlight</span>
               </button>
             )}
-
-            <button
-              type="submit"
-              className="px-4 py-2.5 bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold shrink-0 cursor-pointer transition-colors"
-            >
-              Search OSM
-            </button>
           </div>
-        </form>
 
-        {/* Search Results Dropdown */}
-        {isDropdownOpen && searchResults.length > 0 && (
-          <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden divide-y divide-slate-100 max-h-72 overflow-y-auto">
-            <div className="p-2 bg-slate-50 text-[11px] font-semibold text-slate-500 flex items-center justify-between">
-              <span>OpenStreetMap Nominatim Places ({searchResults.length})</span>
-              <span className="text-[10px] text-slate-400">Rate-limited & compliant</span>
-            </div>
-            {searchResults.map((item) => (
-              <button
-                key={item.place_id}
-                onClick={() => handleSelectGeocodePlace(item)}
-                className="w-full text-left p-3 hover:bg-sky-50/70 transition-colors flex items-start gap-3 cursor-pointer group"
-              >
-                <MapPin className="w-4 h-4 text-sky-600 shrink-0 mt-0.5 group-hover:scale-110 transition-transform" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-bold text-slate-900 truncate">
-                    {item.display_name.split(',')[0]}
-                  </div>
-                  <div className="text-[11px] text-slate-500 truncate">
-                    {item.display_name}
-                  </div>
-                </div>
-                {item.type && (
-                  <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
-                    {item.type.replace('_', ' ')}
-                  </span>
-                )}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar">
+            {INDIAN_RIVERS.map((river) => {
+              const isSelected = selectedRiverId === river.id;
+              return (
+                <button
+                  key={river.id}
+                  onClick={() => handleSelectRiver(river)}
+                  className={`px-3 py-1 rounded-full text-xs shrink-0 transition-all font-medium border flex items-center gap-1.5 cursor-pointer ${
+                    isSelected
+                      ? 'bg-sky-900 text-white border-sky-900 shadow-xs'
+                      : 'bg-slate-50 hover:bg-sky-50 text-slate-700 border-slate-200 hover:border-sky-300'
+                  }`}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: river.color }}
+                  ></span>
+                  <span>{river.name.replace(' River', '')}</span>
+                  <span className="text-[10px] opacity-75 font-mono">{river.lengthKm} km</span>
+                </button>
+              );
+            })}
           </div>
-        )}
-
-        {/* Geocoding Error / Notice Banner */}
-        {geocodingError && (
-          <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Info className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>{geocodingError}</span>
-            </div>
-            <button
-              onClick={() => setGeocodingError(null)}
-              className="text-amber-600 hover:text-amber-800 text-[11px] font-semibold"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        {/* Quick Suggestion Chips for Fast Global Exploration */}
-        <div className="flex items-center gap-1.5 mt-2 overflow-x-auto pb-1 text-[11px] text-slate-500">
-          <span className="font-semibold text-slate-600 shrink-0">Explore Regions:</span>
-          {[
-            { label: 'Oregon Watershed (Data)', query: 'Willamette River, Oregon' },
-            { label: 'Tokyo, Japan', query: 'Tokyo, Japan' },
-            { label: 'Nairobi, Kenya', query: 'Nairobi, Kenya' },
-            { label: 'Rhine River, Germany', query: 'Rhine River, Germany' },
-            { label: 'Amazon Basin, Brazil', query: 'Manaus, Brazil' },
-            { label: 'Ganges Basin, India', query: 'Varanasi, India' },
-          ].map((chip) => (
-            <button
-              key={chip.label}
-              onClick={() => {
-                setSearchQuery(chip.query);
-                performGeocode(chip.query);
-              }}
-              className="px-2 py-0.5 rounded-full bg-slate-100 hover:bg-sky-100 text-slate-700 hover:text-sky-800 border border-slate-200 shrink-0 transition-colors cursor-pointer"
-            >
-              {chip.label}
-            </button>
-          ))}
         </div>
+
+        {/* 3. Multi-Criteria Filters Bar (State, River, District, Station, Date Range, Parameter) */}
+        <div className="space-y-2.5 pt-2 border-t border-slate-100">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {/* Search Input */}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search station name, city, river..."
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="w-full text-xs pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-500"
+              />
+            </div>
+
+            {/* State Filter */}
+            <div>
+              <select
+                value={selectedState}
+                onChange={(e) => {
+                  setSelectedState(e.target.value);
+                  setSelectedDistrict('all');
+                  setCatalogPage(1);
+                }}
+                className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500 truncate"
+              >
+                <option value="all">All States of India ({availableStates.length})</option>
+                {availableStates.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* River Filter */}
+            <div>
+              <select
+                value={selectedRiverFilter}
+                onChange={(e) => {
+                  setSelectedRiverFilter(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500 truncate"
+              >
+                <option value="all">All Indian Rivers ({availableRivers.length})</option>
+                {availableRivers.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            {/* District Filter */}
+            <div>
+              <select
+                value={selectedDistrict}
+                onChange={(e) => {
+                  setSelectedDistrict(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500 truncate"
+              >
+                <option value="all">
+                  {selectedState === 'all'
+                    ? `All Districts (${availableDistricts.length})`
+                    : `All Districts in ${selectedState} (${availableDistricts.length})`}
+                </option>
+                {availableDistricts.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Monitoring Station Selector */}
+            <div>
+              <select
+                value={selectedStationFilter}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSelectedStationFilter(val);
+                  if (val !== 'all') {
+                    const found = verifiedStations.find((s) => s.id === val);
+                    if (found) handleLocateStation(found);
+                  }
+                  setCatalogPage(1);
+                }}
+                className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500 truncate"
+              >
+                <option value="all">Select Monitoring Station ({filteredStations.length})</option>
+                {filteredStations.slice(0, 80).map((st) => (
+                  <option key={st.id} value={st.id}>
+                    {st.name} ({st.stationCode})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Date Range Filter */}
+            <div>
+              <select
+                value={selectedDateRange}
+                onChange={(e) => {
+                  setSelectedDateRange(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+              >
+                <option value="all">All Observation Dates</option>
+                <option value="2026">2026 Observations (Latest Cycle)</option>
+                <option value="2025">2025 Observations</option>
+              </select>
+            </div>
+
+            {/* Water-Quality Parameter Screen */}
+            <div>
+              <select
+                value={highlightParameter}
+                onChange={(e) => {
+                  setHighlightParameter(e.target.value);
+                  setCatalogPage(1);
+                }}
+                className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+              >
+                <option value="all">All Parameters Baseline</option>
+                <option value="do_below_5">Low Dissolved Oxygen (&lt; 5.0 mg/L)</option>
+                <option value="bod_above_3">Elevated BOD (&gt; 3.0 mg/L)</option>
+                <option value="ph_abnormal">pH Out of Range (&lt; 6.5 or &gt; 8.5)</option>
+                <option value="has_cod">Chemical Oxygen Demand (COD Reported)</option>
+                <option value="has_turbidity">Turbidity Reported</option>
+                <option value="has_nitrate">Nitrate Reported</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Selected River Info Banner */}
+        {activeRiverPath && (
+          <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 text-xs text-sky-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <span className="font-extrabold text-sm text-sky-900">{activeRiverPath.name}</span>
+                <span className="text-slate-400">·</span>
+                <span className="font-medium text-sky-700">{activeRiverPath.hindiName}</span>
+                <span className="text-slate-400">·</span>
+                <span className="font-mono text-slate-600">{activeRiverPath.lengthKm} km</span>
+              </div>
+              <p className="text-slate-600 text-[11px]">
+                <strong className="text-slate-800">Origin:</strong> {activeRiverPath.origin} →{' '}
+                <strong className="text-slate-800">Outflow:</strong> {activeRiverPath.outflow}
+              </p>
+              <p className="text-slate-500 text-[11px]">
+                <strong className="text-slate-700">States:</strong> {activeRiverPath.states.join(', ')} ·{' '}
+                <strong className="text-slate-700">Key Reaches:</strong> {activeRiverPath.keyStretches}
+              </p>
+            </div>
+            <div className="shrink-0 flex items-center gap-2">
+              <span className="px-2.5 py-1 rounded-md bg-white border border-sky-200 font-mono text-[11px] font-bold text-sky-800">
+                {filteredStations.length} Verified Stations
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* 3. Main GIS Map Viewport & Station Inspector Grid */}
+      {/* 4. Main GIS Map Viewport & Station Inspector Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* Map Viewport Area (8 Cols) */}
         <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
@@ -816,16 +800,16 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
               <div className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
                 <span className="text-slate-700 font-semibold">
-                  Verified Stations in View:{' '}
+                  Stations in View:{' '}
                   <span className="font-mono text-slate-900">{visibleStationCount}</span> /{' '}
-                  <span className="font-mono text-slate-500">{verifiedStations.length}</span>
+                  <span className="font-mono text-slate-500">{filteredStations.length}</span>
                 </span>
               </div>
 
               <div className="hidden sm:flex items-center gap-2 border-l border-slate-200 pl-3 text-slate-500">
                 <span>Center:</span>
                 <span className="font-mono text-[11px]">
-                  {mapCenterCoords.lat.toFixed(2)}°, {mapCenterCoords.lng.toFixed(2)}°
+                  {mapCenterCoords.lat.toFixed(2)}°N, {mapCenterCoords.lng.toFixed(2)}°E
                 </span>
               </div>
             </div>
@@ -834,24 +818,28 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
             <div className="flex items-center gap-3 text-[11px] font-medium">
               <div className="flex items-center gap-1.5 text-sky-800">
                 <span className="w-2.5 h-2.5 rounded-full bg-sky-700 border border-white shadow-2xs"></span>
-                <span>Normal Telemetry</span>
+                <span>Normal / CPCB Compliant</span>
               </div>
               <div className="flex items-center gap-1.5 text-rose-700">
                 <span className="w-2.5 h-2.5 rounded-full bg-rose-600 border border-white shadow-2xs animate-pulse"></span>
-                <span>Flagged for Review</span>
+                <span>Requires Verification (BOD &gt; 3.0 / DO &lt; 5.0)</span>
               </div>
             </div>
           </div>
 
           {/* Leaflet Map Canvas */}
-          <div className="relative w-full h-[520px] sm:h-[580px] bg-slate-100">
+          <div className="relative w-full h-[520px] sm:h-[600px] bg-slate-100">
+            {/* Zoom In & Zoom Out Buttons directly on map */}
+            <MapZoomButtons onZoomIn={handleZoomIn} onZoomOut={handleZoomOut} />
+
             <MapContainer
-              center={[20, 0]}
-              zoom={2}
-              minZoom={2}
+              center={INDIA_CENTER}
+              zoom={5}
+              minZoom={4}
               maxZoom={18}
               scrollWheelZoom={true}
               className="w-full h-full"
+              ref={mapRef}
             >
               {/* Tile Layer Based on Style Selection */}
               {tileStyle === 'osm' && (
@@ -877,52 +865,43 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
               {/* View Controller */}
               <MapViewController
                 action={mapAction}
-                verifiedStations={verifiedStations}
+                verifiedStations={filteredStations}
                 onVisibleCountChange={handleVisibleCountChange}
               />
 
-              {/* Searched Location Marker */}
-              {selectedSearchPlace && (
-                <Marker
-                  position={[
-                    parseFloat(selectedSearchPlace.lat),
-                    parseFloat(selectedSearchPlace.lon),
-                  ]}
-                  icon={createSearchLocationIcon()}
-                >
-                  <Popup>
-                    <div className="p-3 min-w-[220px] space-y-2">
-                      <div className="flex items-center gap-1.5 text-indigo-700 font-bold text-xs uppercase tracking-wide">
-                        <MapPin className="w-3.5 h-3.5" />
-                        <span>Searched Location</span>
+              {/* Indian River Course Polylines */}
+              {INDIAN_RIVERS.map((river) => {
+                const isSelected = selectedRiverId === river.id;
+                return (
+                  <Polyline
+                    key={river.id}
+                    positions={river.coordinates}
+                    pathOptions={{
+                      color: isSelected ? '#1E40AF' : river.color,
+                      weight: isSelected ? 6 : 3.5,
+                      opacity: isSelected ? 0.95 : 0.75,
+                      dashArray: isSelected ? undefined : '6, 6',
+                    }}
+                    eventHandlers={{
+                      click: () => handleSelectRiver(river),
+                    }}
+                  >
+                    <Tooltip sticky>
+                      <div className="font-sans text-xs">
+                        <strong className="text-sky-900">{river.name}</strong> ({river.hindiName})
+                        <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                          Length: {river.lengthKm} km · {river.keyStretches.split('·')[0]}
+                        </div>
                       </div>
-                      <div className="text-sm font-extrabold text-slate-900">
-                        {selectedSearchPlace.display_name.split(',')[0]}
-                      </div>
-                      <div className="text-[11px] text-slate-500 leading-tight">
-                        {selectedSearchPlace.display_name}
-                      </div>
+                    </Tooltip>
+                  </Polyline>
+                );
+              })}
 
-                      <div className="pt-2 border-t border-slate-100 text-[11px]">
-                        {visibleStationCount === 0 ? (
-                          <div className="text-amber-700 bg-amber-50 p-2 rounded-lg font-medium">
-                            No physical water stations in this area. EcoWatch AI does not infer unverified data.
-                          </div>
-                        ) : (
-                          <div className="text-emerald-700 bg-emerald-50 p-2 rounded-lg font-medium">
-                            {visibleStationCount} verified water station(s) nearby in view.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </Popup>
-                </Marker>
-              )}
-
-              {/* Verified Water Monitoring Stations */}
-              {verifiedStations.map((station) => {
+              {/* Verified Indian River Monitoring Station Markers */}
+              {filteredStations.map((station) => {
                 const isSelected = selectedStationId === station.id;
-                const icon = createStationIcon(station.isFlagged, isSelected);
+                const icon = createStationIcon(station.isFlagged, isSelected, station.cpcbClass);
 
                 return (
                   <Marker
@@ -936,101 +915,105 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
                     }}
                   >
                     <Popup>
-                      <div className="p-3.5 min-w-[260px] max-w-[320px] space-y-2.5">
+                      <div className="p-3.5 min-w-[260px] max-w-[320px] space-y-2.5 font-sans">
                         {/* Header */}
                         <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2">
                           <div>
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">
-                              {station.id}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">
+                                {station.stationCode}
+                              </span>
+                              <span className="text-[10px] font-semibold text-sky-800 bg-sky-50 px-1.5 py-0.5 rounded">
+                                {station.cpcbClass}
+                              </span>
+                            </div>
                             <h4 className="text-sm font-bold text-slate-900 mt-1">
                               {station.name}
                             </h4>
+                            <p className="text-[11px] text-sky-700 font-medium">
+                              {station.river} · {station.state}
+                            </p>
                           </div>
 
-                          <div
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
                               station.isFlagged
-                                ? 'bg-rose-100 text-rose-800'
-                                : 'bg-emerald-100 text-emerald-800'
+                                ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                                : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                             }`}
                           >
-                            {station.status}
+                            {station.isFlagged ? 'Verification Recommended' : station.status}
+                          </span>
+                        </div>
+
+                        {/* Telemetry Metrics */}
+                        <div className="grid grid-cols-2 gap-1.5 text-xs font-mono bg-slate-50 p-2 rounded-lg">
+                          <div>
+                            <span className="text-[10px] text-slate-500 font-sans block">Dissolved Oxygen</span>
+                            <span className={`font-bold ${station.latestReading.dissolved_oxygen < 5.0 ? 'text-amber-700' : 'text-slate-800'}`}>
+                              {station.latestReading.dissolved_oxygen.toFixed(2)} mg/L
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 font-sans block">BOD</span>
+                            <span className={`font-bold ${station.latestReading.bod_mg_l > 3.0 ? 'text-amber-700' : 'text-slate-800'}`}>
+                              {station.latestReading.bod_mg_l.toFixed(2)} mg/L
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 font-sans block">pH Level</span>
+                            <span className="font-bold text-slate-800">{station.latestReading.ph.toFixed(2)}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 font-sans block">Temperature</span>
+                            <span className="font-bold text-slate-800">{station.latestReading.temperature.toFixed(1)}°C</span>
+                          </div>
+                          {station.latestReading.cod_mg_l !== undefined && (
+                            <div>
+                              <span className="text-[10px] text-slate-500 font-sans block">COD</span>
+                              <span className="font-bold text-purple-700">{station.latestReading.cod_mg_l.toFixed(1)} mg/L</span>
+                            </div>
+                          )}
+                          {station.latestReading.turbidity !== undefined && (
+                            <div>
+                              <span className="text-[10px] text-slate-500 font-sans block">Turbidity</span>
+                              <span className="font-bold text-slate-800">{station.latestReading.turbidity.toFixed(1)} NTU</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Coordinates, Date, and Data Source */}
+                        <div className="text-[11px] text-slate-600 space-y-1 pt-0.5">
+                          <div className="flex items-center gap-1">
+                            <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span className="font-mono">
+                              {station.latitude.toFixed(4)}°N, {station.longitude.toFixed(4)}°E
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span>Observation: {formatDate(station.sampleDate)}</span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 bg-slate-100/80 p-1.5 rounded font-sans leading-tight">
+                            <strong className="text-slate-700">Source:</strong> {station.source}
                           </div>
                         </div>
 
-                        {/* Telemetry Snapshot Grid */}
-                        <div className="grid grid-cols-2 gap-1.5 text-[11px] bg-slate-50 p-2 rounded-lg font-mono">
-                          <div>
-                            <span className="text-slate-400 block text-[9px]">pH</span>
-                            <span className="font-bold text-slate-800">
-                              {station.latestReading.ph.toFixed(2)}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-slate-400 block text-[9px]">TURBIDITY</span>
-                            <span className="font-bold text-slate-800">
-                              {station.latestReading.turbidity.toFixed(2)} NTU
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-slate-400 block text-[9px]">DISSOLVED O₂</span>
-                            <span className="font-bold text-slate-800">
-                              {station.latestReading.dissolved_oxygen?.toFixed(2) ?? '—'} mg/L
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-slate-400 block text-[9px]">TDS</span>
-                            <span className="font-bold text-slate-800">
-                              {Math.round(station.latestReading.tds)} mg/L
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Sampling Date & Source */}
-                        <div className="text-[10px] text-slate-500 space-y-0.5">
-                          <div>
-                            <span className="font-semibold text-slate-600">Sample Date:</span>{' '}
-                            {formatDate(station.sampleDate)}
-                          </div>
-                          <div>
-                            <span className="font-semibold text-slate-600">Data Source:</span>{' '}
-                            {station.source}
-                          </div>
-                        </div>
-
-                        {/* Explanation of Any Screening Flag */}
-                        {station.isFlagged && station.flagReasons.length > 0 && (
-                          <div className="p-2 bg-rose-50 border border-rose-200 rounded-lg text-[10px] text-rose-900 leading-snug">
-                            <span className="font-bold text-rose-800 block mb-0.5 flex items-center gap-1">
-                              <AlertTriangle className="w-3 h-3 text-rose-600" />
-                              Triggered Screening Rule:
-                            </span>
-                            {station.flagReasons[0]}
-                          </div>
-                        )}
-
-                        {!station.isFlagged && (
-                          <div className="p-1.5 bg-emerald-50 border border-emerald-200 rounded-lg text-[10px] text-emerald-800 flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
-                            <span>No screening rules triggered. Normal nominal parameters.</span>
-                          </div>
-                        )}
-
-                        {/* Action buttons */}
-                        <div className="pt-1 flex gap-1.5">
+                        {/* Action link */}
+                        <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
                           <button
                             onClick={() => onSelectReading(station.latestReading)}
-                            className="flex-1 py-1 px-2 bg-sky-700 hover:bg-sky-800 text-white rounded text-[11px] font-semibold text-center transition-colors cursor-pointer"
+                            className="text-xs font-semibold text-sky-700 hover:text-sky-900 inline-flex items-center gap-1 cursor-pointer"
                           >
-                            Inspect Raw Telemetry
+                            <span>Open Full Assay</span>
+                            <ExternalLink className="w-3 h-3" />
                           </button>
                           {onNavigateToTrends && (
                             <button
                               onClick={() => onNavigateToTrends(station.name)}
-                              className="py-1 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-medium text-center transition-colors cursor-pointer"
+                              className="text-xs font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
                             >
-                              Trends
+                              View Trends
                             </button>
                           )}
                         </div>
@@ -1040,501 +1023,260 @@ export const WaterPurityMap: React.FC<WaterPurityMapProps> = ({
                 );
               })}
             </MapContainer>
-
-            {/* 4. Empty State Floating Overlay When No Data Exists in Visible Area */}
-            {visibleStationCount === 0 && (
-              <div className="absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:max-w-md z-[1000] bg-white/95 backdrop-blur-md rounded-2xl p-4 border border-amber-200 shadow-xl space-y-3 pointer-events-auto">
-                <div className="flex items-start gap-3">
-                  <div className="p-2 rounded-xl bg-amber-100 text-amber-700 shrink-0 mt-0.5">
-                    <ShieldAlert className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs sm:text-sm font-bold text-slate-900">
-                      No Verified Monitoring Stations in this Viewport
-                    </h4>
-                    <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
-                      EcoWatch AI visualizes only genuine physical sensor telemetry. No stations,
-                      measurements, or coverage estimates are fabricated or interpolated.
-                    </p>
-                  </div>
-                </div>
-
-                {nearestStationInfo && (
-                  <div className="p-2.5 bg-slate-50 rounded-xl text-[11px] text-slate-600 font-medium flex items-center justify-between">
-                    <span>
-                      Nearest verified station:{' '}
-                      <strong className="text-slate-900">{nearestStationInfo.station.name}</strong>
-                    </span>
-                    <span className="font-mono font-bold text-sky-800">
-                      ~{nearestStationInfo.distanceKm.toLocaleString()} km away
-                    </span>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2 pt-1 flex-wrap">
-                  <button
-                    onClick={handleFocusVerifiedStations}
-                    className="flex-1 min-w-[140px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-sky-800 hover:bg-sky-900 rounded-lg shadow-xs transition-colors cursor-pointer"
-                  >
-                    <MapPin className="w-3.5 h-3.5" />
-                    <span>Go to Verified Stations</span>
-                  </button>
-
-                  {onOpenUpload && (
-                    <button
-                      onClick={onOpenUpload}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
-                      title="Upload CSV for this region"
-                    >
-                      <UploadCloud className="w-3.5 h-3.5 text-slate-500" />
-                      <span>Upload CSV</span>
-                    </button>
-                  )}
-
-                  {onOpenCommunityReport && (
-                    <button
-                      onClick={onOpenCommunityReport}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
-                      title="Report water concern"
-                    >
-                      <MessageSquarePlus className="w-3.5 h-3.5 text-slate-500" />
-                      <span>Report Concern</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
-        {/* Station Inspector & Directory Sidebar (4 Cols) */}
+        {/* Station Details Inspector & Catalog (4 Cols) */}
         <div className="lg:col-span-4 space-y-4">
-          {/* Active Station Card */}
+          {/* Active Station Card if selected */}
           {activeStation ? (
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
-              <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+            <div className="bg-white rounded-2xl border border-sky-300 p-5 shadow-sm space-y-4">
+              <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-3">
                 <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
-                      {activeStation.id}
-                    </span>
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                        activeStation.isFlagged
-                          ? 'bg-rose-100 text-rose-800'
-                          : 'bg-emerald-100 text-emerald-800'
-                      }`}
-                    >
-                      {activeStation.status}
-                    </span>
-                  </div>
-                  <h3 className="text-base font-bold text-slate-900 mt-1.5">
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-sky-100 text-sky-900">
+                    {activeStation.stationCode}
+                  </span>
+                  <h3 className="text-base font-extrabold text-slate-900 mt-1">
                     {activeStation.name}
                   </h3>
-                  <p className="text-[11px] text-slate-500 mt-0.5">
-                    {activeStation.source}
+                  <p className="text-xs text-sky-700 font-semibold">
+                    {activeStation.river} · {activeStation.state}
                   </p>
                 </div>
-
                 <button
                   onClick={() => setSelectedStationId(null)}
-                  className="p-1 text-slate-400 hover:text-slate-600 rounded-md"
+                  className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Coordinates & Sample Timestamp */}
-              <div className="grid grid-cols-2 gap-2 text-[11px] p-2.5 bg-slate-50 rounded-xl font-mono text-slate-600">
+              {/* CPCB Class & Verification Status Badge */}
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
                 <div>
-                  <span className="text-slate-400 block text-[9px]">LATITUDE / LONGITUDE</span>
-                  {activeStation.latitude.toFixed(4)}°, {activeStation.longitude.toFixed(4)}°
+                  <span className="text-[10px] text-slate-500 block uppercase font-semibold">CPCB Designated Class</span>
+                  <strong className="text-slate-900 text-sm">{activeStation.cpcbClass}</strong>
                 </div>
-                <div>
-                  <span className="text-slate-400 block text-[9px]">SAMPLING TIMESTAMP</span>
-                  {formatDate(activeStation.sampleDate)}
-                </div>
-              </div>
-
-              {/* Measured Live Telemetry Grid */}
-              <div>
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block mb-2">
-                  Verified Chemical & Physical Readings
+                <span
+                  className={`px-2 py-1 rounded-md text-xs font-bold ${
+                    activeStation.isFlagged
+                      ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                      : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                  }`}
+                >
+                  {activeStation.isFlagged ? 'Verification Recommended' : activeStation.status}
                 </span>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
-                    <span className="text-slate-500 text-[11px]">pH Balance</span>
-                    <div className="font-mono font-bold text-slate-900 mt-0.5">
-                      {activeStation.latestReading.ph.toFixed(2)}
-                    </div>
+              </div>
+
+              {/* Station Geographic Metadata */}
+              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-slate-500">Coordinates:</span>
+                  <span className="font-mono font-medium text-slate-800">
+                    {activeStation.latitude.toFixed(4)}°N, {activeStation.longitude.toFixed(4)}°E
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-slate-500">Observation Date:</span>
+                  <span className="font-medium text-slate-800">{formatDate(activeStation.sampleDate)}</span>
+                </div>
+                {activeStation.district && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-slate-500">District:</span>
+                    <span className="font-medium text-slate-800">{activeStation.district}</span>
                   </div>
-                  <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
-                    <span className="text-slate-500 text-[11px]">Turbidity</span>
-                    <div className="font-mono font-bold text-slate-900 mt-0.5">
-                      {activeStation.latestReading.turbidity.toFixed(2)} NTU
-                    </div>
-                  </div>
-                  <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
-                    <span className="text-slate-500 text-[11px]">Total Dissolved Solids</span>
-                    <div className="font-mono font-bold text-slate-900 mt-0.5">
-                      {Math.round(activeStation.latestReading.tds)} mg/L
-                    </div>
-                  </div>
-                  <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
-                    <span className="text-slate-500 text-[11px]">Dissolved Oxygen</span>
-                    <div className="font-mono font-bold text-slate-900 mt-0.5">
-                      {activeStation.latestReading.dissolved_oxygen?.toFixed(2) ?? '—'} mg/L
-                    </div>
-                  </div>
-                  <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
-                    <span className="text-slate-500 text-[11px]">Temperature</span>
-                    <div className="font-mono font-bold text-slate-900 mt-0.5">
-                      {activeStation.latestReading.temperature.toFixed(1)}°C
-                    </div>
-                  </div>
-                  <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
-                    <span className="text-slate-500 text-[11px]">Nitrate (NO₃-N)</span>
-                    <div className="font-mono font-bold text-slate-900 mt-0.5">
-                      {activeStation.latestReading.nitrate_mg_l !== undefined
-                        ? `${activeStation.latestReading.nitrate_mg_l.toFixed(1)} mg/L`
-                        : '—'}
-                    </div>
-                  </div>
+                )}
+                <div className="text-[10px] text-slate-500 pt-1 border-t border-slate-200">
+                  <strong>Source:</strong> {activeStation.source}
                 </div>
               </div>
 
-              {/* Status or Anomaly Flag Explanation */}
-              {activeStation.isFlagged ? (
-                <div className="p-3 bg-rose-50 rounded-xl border border-rose-200 text-xs text-rose-900 space-y-1.5">
-                  <div className="flex items-center gap-1.5 font-bold text-rose-800">
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                    <span>Screening Rule Advisory</span>
-                  </div>
-                  <ul className="text-[11px] list-disc list-inside space-y-1 text-rose-800 leading-relaxed">
-                    {activeStation.flagReasons.map((reason, idx) => (
-                      <li key={idx}>{reason}</li>
-                    ))}
-                  </ul>
-                  <p className="text-[10px] text-rose-600 pt-1">
-                    Rule triggered for environmental triage; not an authoritative potable determination.
-                  </p>
+              {/* Water Quality Telemetry Grid */}
+              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                  <span className="text-[10px] text-slate-500 font-sans block">Dissolved Oxygen</span>
+                  <span className={`text-sm font-bold ${activeStation.latestReading.dissolved_oxygen < 5.0 ? 'text-amber-700' : 'text-slate-900'}`}>
+                    {activeStation.latestReading.dissolved_oxygen.toFixed(2)}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-sans"> mg/L</span>
                 </div>
-              ) : (
-                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-900 space-y-1">
-                  <div className="flex items-center gap-1.5 font-bold text-emerald-800">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span>All Screening Rules Clear</span>
+                <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                  <span className="text-[10px] text-slate-500 font-sans block">BOD</span>
+                  <span className={`text-sm font-bold ${activeStation.latestReading.bod_mg_l > 3.0 ? 'text-amber-700' : 'text-slate-900'}`}>
+                    {activeStation.latestReading.bod_mg_l.toFixed(2)}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-sans"> mg/L</span>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                  <span className="text-[10px] text-slate-500 font-sans block">pH Value</span>
+                  <span className="text-sm font-bold text-slate-900">
+                    {activeStation.latestReading.ph.toFixed(2)}
+                  </span>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                  <span className="text-[10px] text-slate-500 font-sans block">Temperature</span>
+                  <span className="text-sm font-bold text-slate-900">
+                    {activeStation.latestReading.temperature.toFixed(1)}°C
+                  </span>
+                </div>
+                {activeStation.latestReading.cod_mg_l !== undefined && (
+                  <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                    <span className="text-[10px] text-slate-500 font-sans block">COD</span>
+                    <span className="text-sm font-bold text-purple-700">
+                      {activeStation.latestReading.cod_mg_l.toFixed(1)}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-sans"> mg/L</span>
                   </div>
-                  <p className="text-[11px] text-emerald-700 leading-relaxed">
-                    Measured water telemetry is within standard EPA and WHO drinking water baseline ranges.
-                  </p>
+                )}
+                {activeStation.latestReading.turbidity !== undefined && (
+                  <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                    <span className="text-[10px] text-slate-500 font-sans block">Turbidity</span>
+                    <span className="text-sm font-bold text-slate-900">
+                      {activeStation.latestReading.turbidity.toFixed(1)}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-sans"> NTU</span>
+                  </div>
+                )}
+                {activeStation.latestReading.nitrate_mg_l !== undefined && (
+                  <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                    <span className="text-[10px] text-slate-500 font-sans block">Nitrate</span>
+                    <span className="text-sm font-bold text-blue-700">
+                      {activeStation.latestReading.nitrate_mg_l.toFixed(2)}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-sans"> mg/L</span>
+                  </div>
+                )}
+                <div className="p-2 rounded-lg bg-slate-50 border border-slate-100">
+                  <span className="text-[10px] text-slate-500 font-sans block">TDS</span>
+                  <span className="text-sm font-bold text-slate-900">
+                    {activeStation.latestReading.tds}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-sans"> mg/L</span>
+                </div>
+              </div>
+
+              {/* Notes */}
+              {activeStation.latestReading.review_notes && (
+                <div className="text-[11px] text-slate-600 p-2.5 rounded-lg bg-slate-50 border border-slate-200 leading-relaxed">
+                  <strong className="text-slate-800">Compliance Notes:</strong> {activeStation.latestReading.review_notes}
                 </div>
               )}
 
-              {/* Action Buttons */}
-              <div className="pt-2 flex flex-col gap-2">
+              {/* Inspector Buttons */}
+              <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
                 <button
                   onClick={() => onSelectReading(activeStation.latestReading)}
-                  className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-sky-700 hover:bg-sky-800 rounded-lg shadow-xs transition-colors cursor-pointer"
+                  className="flex-1 py-2 text-xs font-semibold text-white bg-sky-800 hover:bg-sky-900 rounded-lg text-center shadow-xs transition-colors cursor-pointer"
                 >
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>Inspect Complete Sensor Record</span>
+                  Full Chemical Assay
                 </button>
-
                 {onNavigateToTrends && (
                   <button
                     onClick={() => onNavigateToTrends(activeStation.name)}
-                    className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                    className="px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
                   >
-                    <Activity className="w-3.5 h-3.5 text-slate-500" />
-                    <span>View Historical Temporal Trends</span>
+                    Historical Trend
                   </button>
                 )}
               </div>
             </div>
           ) : (
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm text-center space-y-3">
-              <div className="w-12 h-12 rounded-2xl bg-sky-50 text-sky-700 flex items-center justify-center mx-auto">
-                <MapPin className="w-6 h-6" />
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
+              <div className="flex items-center gap-2 text-sky-800">
+                <Compass className="w-4 h-4" />
+                <h3 className="text-sm font-bold">CPCB Station Navigator</h3>
               </div>
-              <h4 className="text-sm font-bold text-slate-900">Select a Station Marker</h4>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Click any water monitoring marker on the map to inspect its chemical parameters, sampling date,
-                data source, and screening explanations.
+                Click any monitoring marker or river path on the GIS map to inspect live dissolved oxygen, biochemical oxygen demand, pH, and CPCB Bathing criteria compliance.
               </p>
+              <div className="p-3 bg-sky-50 rounded-xl border border-sky-100 text-xs text-sky-900 space-y-1">
+                <strong className="block font-bold">CPCB Bathing Standard (Class B):</strong>
+                <span>DO &ge; 5.0 mg/L · BOD &le; 3.0 mg/L · pH 6.5 – 8.5</span>
+              </div>
             </div>
           )}
 
-          {/* Verified Stations Catalog */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-3.5">
-            <div className="flex items-center justify-between">
+          {/* Paginated Station Catalog */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
               <div>
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-teal-500 inline-block"></span>
-                  Verified Stations Catalog
-                </h4>
-                <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                  <strong className="text-slate-800">{verifiedStations.length}</strong> Stations ·{' '}
-                  <strong className="text-slate-800">{readings.length}</strong> Reports Analyzed
+                <h4 className="text-sm font-bold text-slate-900">River Stations Catalog</h4>
+                <p className="text-[11px] text-slate-500">
+                  Showing {filteredStations.length} verified stations in India
                 </p>
               </div>
-              <span className="text-[10px] bg-teal-50 text-teal-800 font-mono font-semibold px-2 py-0.5 rounded border border-teal-200/70">
-                CPCB · APPCB Network
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">
+                Page {catalogPage} of {catalogTotalPages}
               </span>
             </div>
 
-            {/* Safety Distinction Notice */}
-            <div className="p-2.5 rounded-lg bg-sky-50/70 border border-sky-100 text-[11px] text-slate-600 space-y-0.5">
-              <div className="flex items-center gap-1.5 font-semibold text-sky-900">
-                <Info className="w-3.5 h-3.5 text-sky-700 shrink-0" />
-                <span>Verified Source vs Drinking Safety</span>
-              </div>
-              <p className="text-[10px] text-slate-500 leading-relaxed">
-                Published measurements reflect official state agency screening samples. An official station record does not independently certify drinking water safety.
-              </p>
-            </div>
-
-            {/* Search and Filters */}
-            <div className="space-y-2 pt-0.5">
-              {/* Search box */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={catalogSearch}
-                  onChange={(e) => {
-                    setCatalogSearch(e.target.value);
-                    setCatalogPage(1);
-                  }}
-                  placeholder="Search station, district, river, code..."
-                  className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-sky-500 focus:bg-white"
-                />
-                {catalogSearch && (
-                  <button
-                    onClick={() => {
-                      setCatalogSearch('');
-                      setCatalogPage(1);
-                    }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+              {paginatedCatalogStations.map((st) => {
+                const isSelected = selectedStationId === st.id;
+                return (
+                  <div
+                    key={st.id}
+                    onClick={() => handleLocateStation(st)}
+                    className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'border-sky-500 bg-sky-50/50 shadow-xs'
+                        : 'border-slate-100 hover:border-sky-200 bg-white hover:bg-slate-50'
+                    }`}
                   >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-
-              {/* District & River Filters */}
-              <div className="grid grid-cols-2 gap-1.5 text-xs">
-                <div>
-                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">District</label>
-                  <select
-                    value={catalogDistrict}
-                    onChange={(e) => {
-                      setCatalogDistrict(e.target.value);
-                      setCatalogPage(1);
-                    }}
-                    className="w-full py-1 px-1.5 text-[11px] bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-sky-500 text-slate-700 truncate"
-                  >
-                    <option value="all">All Districts ({availableDistricts.length})</option>
-                    {availableDistricts.map((d) => (
-                      <option key={d} value={d}>
-                        {d}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Water Body</label>
-                  <select
-                    value={catalogRiver}
-                    onChange={(e) => {
-                      setCatalogRiver(e.target.value);
-                      setCatalogPage(1);
-                    }}
-                    className="w-full py-1 px-1.5 text-[11px] bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-sky-500 text-slate-700 truncate"
-                  >
-                    <option value="all">All Water Bodies ({availableRivers.length})</option>
-                    {availableRivers.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Status filter tabs */}
-              <div className="flex items-center gap-1 text-[11px] pt-0.5">
-                <button
-                  onClick={() => {
-                    setCatalogStatus('all');
-                    setCatalogPage(1);
-                  }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                    catalogStatus === 'all'
-                      ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  All ({filteredCatalogStations.length})
-                </button>
-                <button
-                  onClick={() => {
-                    setCatalogStatus('flagged');
-                    setCatalogPage(1);
-                  }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                    catalogStatus === 'flagged'
-                      ? 'bg-rose-700 text-white'
-                      : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
-                  }`}
-                >
-                  Flagged ({verifiedStations.filter((s) => s.isFlagged).length})
-                </button>
-                <button
-                  onClick={() => {
-                    setCatalogStatus('normal');
-                    setCatalogPage(1);
-                  }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                    catalogStatus === 'normal'
-                      ? 'bg-emerald-700 text-white'
-                      : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                  }`}
-                >
-                  Normal ({verifiedStations.filter((s) => !s.isFlagged).length})
-                </button>
-              </div>
-            </div>
-
-            {/* Station List or Empty State */}
-            {filteredCatalogStations.length === 0 ? (
-              <div className="p-5 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-2">
-                <AlertTriangle className="w-5 h-5 text-amber-500 mx-auto" />
-                <p className="text-xs font-semibold text-slate-700">No matching stations found</p>
-                <p className="text-[11px] text-slate-500">
-                  Try adjusting the district filter or search query.
-                </p>
-                <button
-                  onClick={() => {
-                    setCatalogSearch('');
-                    setCatalogDistrict('all');
-                    setCatalogRiver('all');
-                    setCatalogStatus('all');
-                    setCatalogPage(1);
-                  }}
-                  className="px-2.5 py-1 text-[11px] font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-md transition-colors cursor-pointer"
-                >
-                  Reset All Filters
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-1.5 max-h-72 overflow-y-auto divide-y divide-slate-100 pr-1">
-                {paginatedCatalogStations.map((st) => {
-                  const isSelected = selectedStationId === st.id;
-                  return (
-                    <div
-                      key={st.id}
-                      onClick={() => {
-                        setSelectedStationId(st.id);
-                        setMapAction({
-                          id: Date.now(),
-                          type: 'flyTo',
-                          center: [st.latitude, st.longitude],
-                          zoom: 14,
-                        });
-                      }}
-                      className={`p-2.5 rounded-lg flex flex-col gap-1 cursor-pointer transition-colors ${
-                        isSelected
-                          ? 'bg-sky-50/90 border border-sky-300 font-semibold shadow-2xs'
-                          : 'hover:bg-slate-50 border border-transparent'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-start gap-2 truncate">
-                          <span
-                            className={`w-2 h-2 rounded-full shrink-0 mt-1 ${
-                              st.isFlagged ? 'bg-rose-600 animate-pulse' : 'bg-emerald-600'
-                            }`}
-                          />
-                          <div className="truncate text-xs">
-                            <div className="text-slate-900 font-medium truncate" title={st.name}>
-                              {st.name}
-                            </div>
-                            <div className="flex items-center gap-1.5 mt-0.5 text-[10px]">
-                              {st.stationCode && (
-                                <span className="font-mono px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-semibold">
-                                  {st.stationCode}
-                                </span>
-                              )}
-                              {st.district && (
-                                <span className="text-teal-700 font-medium">{st.district}</span>
-                              )}
-                              {st.waterBody && (
-                                <span className="text-slate-400">· {st.waterBody}</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="text-right shrink-0">
-                          <span
-                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                              st.isFlagged
-                                ? 'bg-rose-100 text-rose-800'
-                                : 'bg-emerald-100 text-emerald-800'
-                            }`}
-                          >
-                            {st.status}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-mono font-bold text-slate-500">
+                            {st.stationCode}
+                          </span>
+                          <span className="text-[10px] font-semibold text-sky-800 bg-sky-50 px-1 py-0.2 rounded">
+                            {st.cpcbClass}
                           </span>
                         </div>
+                        <h5 className="text-xs font-bold text-slate-900 truncate mt-0.5">
+                          {st.name}
+                        </h5>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          {st.river} · {st.state}
+                        </p>
                       </div>
 
-                      {/* Coordinates and parameter summary */}
-                      <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono pl-4">
-                        <span>
-                          {st.latitude.toFixed(3)}°N, {st.longitude.toFixed(3)}°E
+                      <div className="text-right shrink-0">
+                        <span className="text-xs font-mono font-bold text-slate-800 block">
+                          DO: {st.latestReading.dissolved_oxygen.toFixed(1)}
                         </span>
-                        <span className="text-slate-400">
-                          pH {st.latestReading.ph.toFixed(1)} · Turb {st.latestReading.turbidity.toFixed(1)} NTU
+                        <span className="text-[10px] font-mono text-slate-500 block">
+                          BOD: {st.latestReading.bod_mg_l.toFixed(1)}
                         </span>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  </div>
+                );
+              })}
+            </div>
 
             {/* Pagination Controls */}
-            {filteredCatalogStations.length > 0 && (
-              <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
-                <span>
-                  Showing {(catalogPage - 1) * catalogPageSize + 1}–
-                  {Math.min(catalogPage * catalogPageSize, filteredCatalogStations.length)} of{' '}
-                  {filteredCatalogStations.length}
+            {catalogTotalPages > 1 && (
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
+                <button
+                  onClick={() => setCatalogPage((p) => Math.max(1, p - 1))}
+                  disabled={catalogPage === 1}
+                  className="px-2.5 py-1 rounded-md border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Prev</span>
+                </button>
+                <span className="text-slate-500 text-[11px]">
+                  {catalogPage} / {catalogTotalPages}
                 </span>
-
-                <div className="flex items-center gap-1">
-                  <button
-                    disabled={catalogPage <= 1}
-                    onClick={() => setCatalogPage((p) => Math.max(1, p - 1))}
-                    className="p-1 rounded border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                    title="Previous page"
-                  >
-                    <ChevronLeft className="w-3.5 h-3.5" />
-                  </button>
-                  <span className="font-mono font-medium px-1">
-                    {catalogPage} / {catalogTotalPages}
-                  </span>
-                  <button
-                    disabled={catalogPage >= catalogTotalPages}
-                    onClick={() => setCatalogPage((p) => Math.min(catalogTotalPages, p + 1))}
-                    className="p-1 rounded border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                    title="Next page"
-                  >
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                <button
+                  onClick={() => setCatalogPage((p) => Math.min(catalogTotalPages, p + 1))}
+                  disabled={catalogPage === catalogTotalPages}
+                  className="px-2.5 py-1 rounded-md border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
               </div>
             )}
           </div>

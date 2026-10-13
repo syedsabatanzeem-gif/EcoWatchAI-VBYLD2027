@@ -440,7 +440,7 @@ export const WaterQualityExplorer: React.FC<WaterQualityExplorerProps> = ({
                     </td>
                     <td className="p-3 text-right tabular-nums">{r.ph.toFixed(2)}</td>
                     <td className="p-3 text-right tabular-nums">
-                      {r.turbidity.toFixed(2)}
+                      {r.turbidity != null ? r.turbidity.toFixed(2) : '—'}
                     </td>
                     <td className="p-3 font-sans text-[11px]">
                       <span

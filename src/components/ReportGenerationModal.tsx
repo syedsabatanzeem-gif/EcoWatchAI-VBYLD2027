@@ -80,9 +80,8 @@ export const ReportGenerationModal: React.FC<ReportGenerationModalProps> = ({
         ...flagged.map((f, i) =>
           [
             `[${i + 1}] ID: ${f.id} | Location: ${f.location} | Date: ${f.timestamp}`,
-            `    Status: ${f.status} | ML Anomaly: ${f.ml_anomaly ? 'YES' : 'NO'}`,
-            `    pH: ${f.ph.toFixed(2)} | Turbidity: ${f.turbidity.toFixed(2)} NTU | TDS: ${Math.round(f.tds)} mg/L`,
-            `    DO: ${f.dissolved_oxygen?.toFixed(2) ?? 'N/A'} mg/L | Nitrate: ${f.nitrate_mg_l?.toFixed(1) ?? 'N/A'} mg/L`,
+            `    pH: ${f.ph.toFixed(2)} | Turbidity: ${f.turbidity != null ? `${f.turbidity.toFixed(2)} NTU` : 'N/A'} | TDS: ${Math.round(f.tds)} mg/L`,
+            `    DO: ${f.dissolved_oxygen?.toFixed(2) ?? 'N/A'} mg/L | BOD: ${f.bod_mg_l?.toFixed(2) ?? 'N/A'} mg/L | Nitrate: ${f.nitrate_mg_l?.toFixed(1) ?? 'N/A'} mg/L`,
             `    Trigger Reasons: ${(f.anomaly_reasons || []).join('; ')}`,
             `    Analyst Notes: ${f.review_notes || 'None logged'}`,
             '',

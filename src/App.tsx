@@ -38,6 +38,8 @@ export default function App() {
   const [locationComparisons, setLocationComparisons] = useState<LocationComparison[]>([]);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [locations, setLocations] = useState<string[]>([]);
+  const [riversList, setRiversList] = useState<string[]>([]);
+  const [statesList, setStatesList] = useState<string[]>([]);
   const [thresholds, setThresholds] = useState<ThresholdConfig | undefined>(undefined);
 
   // Filter & Pagination States
@@ -45,6 +47,8 @@ export default function App() {
   const [totalPages, setTotalPages] = useState<number>(1);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedLocation, setSelectedLocation] = useState<string>('all');
+  const [selectedRiver, setSelectedRiver] = useState<string>('all');
+  const [selectedState, setSelectedState] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [sortBy, setSortBy] = useState<string>('timestamp');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -81,6 +85,8 @@ export default function App() {
         limit: '10',
         search: searchQuery,
         location: selectedLocation,
+        river: selectedRiver,
+        state: selectedState,
         status: selectedStatus,
         sortBy,
         sortOrder,
@@ -92,11 +98,13 @@ export default function App() {
         setTotalReadings(data.total);
         setTotalPages(data.totalPages);
         if (data.locations) setLocations(data.locations);
+        if (data.rivers) setRiversList(data.rivers);
+        if (data.states) setStatesList(data.states);
       }
     } catch (e) {
       console.error('Failed to fetch readings:', e);
     }
-  }, [page, searchQuery, selectedLocation, selectedStatus, sortBy, sortOrder]);
+  }, [page, searchQuery, selectedLocation, selectedRiver, selectedState, selectedStatus, sortBy, sortOrder]);
 
   // Fetch All Readings
   const fetchAllReadings = useCallback(async () => {
@@ -383,11 +391,16 @@ export default function App() {
                 <ReadingsTable
                   readings={readings}
                   totalReadings={totalReadings}
+                  totalStations={summary?.totalStations || locations.length}
                   page={page}
                   totalPages={totalPages}
                   locations={locations}
+                  rivers={riversList}
+                  states={statesList}
                   searchQuery={searchQuery}
                   selectedLocation={selectedLocation}
+                  selectedRiver={selectedRiver}
+                  selectedState={selectedState}
                   selectedStatus={selectedStatus}
                   sortBy={sortBy}
                   sortOrder={sortOrder}
@@ -397,6 +410,14 @@ export default function App() {
                   }}
                   onLocationChange={(loc) => {
                     setSelectedLocation(loc);
+                    setPage(1);
+                  }}
+                  onRiverChange={(r) => {
+                    setSelectedRiver(r);
+                    setPage(1);
+                  }}
+                  onStateChange={(st) => {
+                    setSelectedState(st);
                     setPage(1);
                   }}
                   onStatusChange={(st) => {
